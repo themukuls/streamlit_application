@@ -155,6 +155,49 @@ import copy
 from datetime import datetime, timezone
 from azure.storage.blob import BlobServiceClient
 
+# Set the page to wide layout. This must be the first Streamlit command.
+st.set_page_config(layout="wide")
+
+# --- 🔐 PASSWORD PROTECTION ---
+
+def check_password():
+    """Returns True if the user is logged in, False otherwise."""
+    
+    # Check if the user is already logged in
+    if st.session_state.get("logged_in", False):
+        return True
+
+    try:
+        # Load the correct password from secrets
+        correct_password = st.secrets["APP_PASSWORD"]
+    except (KeyError, FileNotFoundError):
+        st.error("Password is not configured. Please set APP_PASSWORD in Streamlit secrets.")
+        st.stop()
+
+    # Create a login form
+    with st.form("login"):
+        st.header("Login Required")
+        st.write("Please enter the password to access the editor.")
+        password_attempt = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+
+    if submitted:
+        if password_attempt == correct_password:
+            # If password is correct, set session state and rerun
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Incorrect password. Please try again.")
+    
+    # If not logged in, return False
+    return False
+
+# --- 🏃‍♂️ MAIN APP EXECUTION ---
+
+# Stop execution if the password check fails
+if not check_password():
+    st.stop()
+
 # --- Configuration ---
 try:
     AZURE_STORAGE_CONNECTION_STRING = st.secrets["AZURE_STORAGE_CONNECTION_STRING"]
