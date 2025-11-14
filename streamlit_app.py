@@ -207,7 +207,7 @@ except (KeyError, FileNotFoundError):
 
 # APP_METADATA_CONTAINER_NAME = "app-metadata"
 # Define the list of applications the editor will manage.
-SUPPORTED_APPS = ["mmx", "FAST", "salesmate","mmm1"]
+SUPPORTED_APPS = ["mmx", "FAST", "salesmate","mmm1", "kythera"]
 
 ENVIRONMENTS = ["dev", "qa", "prod"]
 selected_env = st.sidebar.selectbox("Select Environment:", ENVIRONMENTS, index=0)
