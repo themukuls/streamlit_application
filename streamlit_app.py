@@ -81,7 +81,7 @@ if not check_password():
 
 # --- Configuration & Environment Selection ---
 
-SUPPORTED_APPS = ["mmx", "FAST", "salesmate", "mmm1", "patient_claims", "fast1", "insightsai1"]
+SUPPORTED_APPS = ["mmx", "FAST", "salesmate", "mmm1", "patient_claims", "fast1", "insightsai1","ih"]
 ENVIRONMENTS = ["dev", "qa", "prod", "aws"] # Added AWS
 
 st.sidebar.header("Configuration")
