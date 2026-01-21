@@ -87,8 +87,7 @@ APP_NAME_ALIAS = {
     "fast1": "fast"    # UI fast1 → backend fast (SQL)
 }
 FORCE_MIGRATION_READ_FROM_ALIAS = {
-    "fast": True,
-    "fast1": True   # optional; set False if you don't want reverse migration
+   
 }
 ENVIRONMENTS = ["dev", "qa", "prod", "aws"] # Added AWS
 
