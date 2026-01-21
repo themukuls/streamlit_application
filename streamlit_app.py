@@ -84,7 +84,9 @@ if not check_password():
 SUPPORTED_APPS = ["mmx", "FAST", "insightsai", "mmm1", "patient_claims", "fast1", "insightsai1","ihub"]
 APP_NAME_ALIAS = {
     "fast": "fast1",   # UI fast → backend fast1 (Postgres)
-    "fast1": "fast"    # UI fast1 → backend fast (SQL)
+    "fast1": "fast",
+    "insightsai":"insightsai1",
+    "insightsai1":"insisghtsai"
 }
 FORCE_MIGRATION_READ_FROM_ALIAS = {
     "insightsai": True,
