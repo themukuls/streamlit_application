@@ -439,7 +439,7 @@ else:
                          updated_data = {"APPS": [{"name": selected_app_name, "prompts": []}]}
 
                     # Find the app to update within the copied data structure
-                    app_to_update = next((app for app in updated_data["APPS"] if app.get("name", "").lower() == selected_app_name.lower()), None)
+                    app_to_update = next((app for app in updated_data["APPS"] if app.get("name", "").lower() == read_app_name.lower()), None)
                     
                     if app_to_update:
                         app_to_update["prompts"][selected_prompt_index]["content"] = edited_content_str.split('\n')
