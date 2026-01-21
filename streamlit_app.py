@@ -82,7 +82,17 @@ if not check_password():
 # --- Configuration & Environment Selection ---
 
 SUPPORTED_APPS = ["mmx", "FAST", "salesmate", "mmm1", "patient_claims", "fast1", "insightsai1","ihub"]
+APP_NAME_ALIAS = {
+    "fast": "fast1",   # UI fast → backend fast1 (Postgres)
+    "fast1": "fast"    # UI fast1 → backend fast (SQL)
+}
 ENVIRONMENTS = ["dev", "qa", "prod", "aws"] # Added AWS
+
+def resolve_backend_app_name(ui_app_name: str) -> str:
+    """
+    Convert UI app name to real backend app name.
+    """
+    return APP_NAME_ALIAS.get(ui_app_name.lower(), ui_app_name.lower())
 
 st.sidebar.header("Configuration")
 selected_env = st.sidebar.selectbox("Select Environment:", ENVIRONMENTS, index=0)
@@ -345,6 +355,8 @@ st.title("Prompt Repository Editor")
 
 # App selection is the primary driver of the UI
 selected_app_name = st.selectbox("Select an App to manage:", SUPPORTED_APPS)
+
+selected_app_name = resolve_backend_app_name(selected_app_name)
 
 # When the app changes, clear the cache and reload data
 # We also clear if the Environment changes
