@@ -86,13 +86,25 @@ APP_NAME_ALIAS = {
     "fast": "fast1",   # UI fast → backend fast1 (Postgres)
     "fast1": "fast"    # UI fast1 → backend fast (SQL)
 }
+FORCE_MIGRATION_READ_FROM_ALIAS = {
+    "fast": True,
+    "fast1": True   # optional; set False if you don't want reverse migration
+}
 ENVIRONMENTS = ["dev", "qa", "prod", "aws"] # Added AWS
 
-def resolve_backend_app_name(ui_app_name: str) -> str:
-    """
-    Convert UI app name to real backend app name.
-    """
-    return APP_NAME_ALIAS.get(ui_app_name.lower(), ui_app_name.lower())
+
+def determine_read_app_name(ui_app_name: str) -> str:
+    ui_app_name = ui_app_name.lower()
+
+    if FORCE_MIGRATION_READ_FROM_ALIAS.get(ui_app_name, False):
+        return APP_NAME_ALIAS.get(ui_app_name, ui_app_name)
+
+    return ui_app_name
+
+
+def determine_write_app_name(ui_app_name: str) -> str:
+    return ui_app_name.lower()
+
 
 st.sidebar.header("Configuration")
 selected_env = st.sidebar.selectbox("Select Environment:", ENVIRONMENTS, index=0)
@@ -356,11 +368,12 @@ st.title("Prompt Repository Editor")
 # App selection is the primary driver of the UI
 selected_app_name = st.selectbox("Select an App to manage:", SUPPORTED_APPS)
 
-selected_app_name = resolve_backend_app_name(selected_app_name)
+read_app_name = determine_read_app_name(selected_app_name)
+write_app_name = determine_write_app_name(selected_app_name)
 
 # When the app changes, clear the cache and reload data
 # We also clear if the Environment changes
-state_key = f"{selected_app_name}_{selected_env}"
+state_key = f"{read_app_name}_{selected_env}"
 if 'current_app_state' not in st.session_state or st.session_state.current_app_state != state_key:
     st.cache_data.clear()
     st.session_state.current_app_state = state_key
@@ -369,15 +382,23 @@ if 'current_app_state' not in st.session_state or st.session_state.current_app_s
 
 # --- Load Data ---
 with st.spinner(f"Loading data for '{selected_app_name}' from {selected_env.upper()}..."):
-    full_data = download_data_dispatcher(selected_app_name, selected_env)
+    full_data = download_data_dispatcher(read_app_name, selected_env)
 
 # Find the specific app's data within the loaded structure
 # (Handling case-insensitive matching for app names)
 app_data = None
 if full_data and "APPS" in full_data:
-    app_data = next((app for app in full_data["APPS"] if app.get("name", "").lower() == selected_app_name.lower()), None)
+    app_data = next((app for app in full_data["APPS"] if app.get("name", "").lower() == read_app_name.lower()), None)
 
 st.subheader(f"Editing Prompts for: `{selected_app_name}` ({selected_env})")
+
+st.caption(
+    f"📥 Loading from: `{read_app_name}` | "
+    f"📤 Saving as: `{write_app_name}`"
+)
+
+if FORCE_MIGRATION_READ_FROM_ALIAS.get(selected_app_name.lower(), False):
+    st.warning("⚠️ Migration mode ON — loading from alias source")
 
 if app_data is None:
     st.warning(f"Could not find data for '{selected_app_name}' in the loaded file. You can initialize it below.")
@@ -423,8 +444,8 @@ else:
                     if app_to_update:
                         app_to_update["prompts"][selected_prompt_index]["content"] = edited_content_str.split('\n')
                         
-                        if upload_data_dispatcher(selected_app_name, updated_data, selected_env):
-                            trigger_cache_clear(selected_app_name, selected_env)
+                        if upload_data_dispatcher(write_app_name, updated_data, selected_env):
+                            trigger_cache_clear(write_app_name, selected_env)
                             st.cache_data.clear()
                             st.rerun()
                     else:
@@ -438,7 +459,7 @@ st.divider()
 col1, col2 = st.columns(2)
 with col1:
     st.subheader("Previous Versions")
-    previous_blobs = fetch_history_dispatcher(selected_app_name, selected_env)
+    previous_blobs = fetch_history_dispatcher(read_app_name, selected_env)
     
     if previous_blobs:
         selected_blob = st.selectbox("Select a version to preview", previous_blobs, key=f"version_select_{selected_app_name}")
@@ -494,8 +515,8 @@ with col2:
             if "APPS" not in new_data or not isinstance(new_data["APPS"], list):
                  st.error("Invalid JSON structure. Root must contain an 'APPS' list.")
             else:
-                if upload_data_dispatcher(selected_app_name, new_data, selected_env):
-                    trigger_cache_clear(selected_app_name, selected_env)
+                if upload_data_dispatcher(write_app_name, new_data, selected_env):
+                    trigger_cache_clear(write_app_name, selected_env)
                     st.cache_data.clear()
                     st.rerun()
         except json.JSONDecodeError:
