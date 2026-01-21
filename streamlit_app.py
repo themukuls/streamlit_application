@@ -443,6 +443,7 @@ else:
                     
                     if app_to_update:
                         app_to_update["prompts"][selected_prompt_index]["content"] = edited_content_str.split('\n')
+                        app_to_update["name"] = write_app_name
                         
                         if upload_data_dispatcher(write_app_name, updated_data, selected_env):
                             trigger_cache_clear(write_app_name, selected_env)
@@ -515,6 +516,9 @@ with col2:
             if "APPS" not in new_data or not isinstance(new_data["APPS"], list):
                  st.error("Invalid JSON structure. Root must contain an 'APPS' list.")
             else:
+                for app in new_data.get("APPS", []):
+                    if app.get("name", "").lower() == read_app_name.lower():
+                        app["name"] = write_app_name
                 if upload_data_dispatcher(write_app_name, new_data, selected_env):
                     trigger_cache_clear(write_app_name, selected_env)
                     st.cache_data.clear()
