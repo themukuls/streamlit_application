@@ -81,13 +81,14 @@ if not check_password():
 
 # --- Configuration & Environment Selection ---
 
-SUPPORTED_APPS = ["mmx", "FAST", "salesmate", "mmm1", "patient_claims", "fast1", "insightsai1","ihub"]
+SUPPORTED_APPS = ["mmx", "FAST", "insightsai", "mmm1", "patient_claims", "fast1", "insightsai1","ihub"]
 APP_NAME_ALIAS = {
     "fast": "fast1",   # UI fast → backend fast1 (Postgres)
     "fast1": "fast"    # UI fast1 → backend fast (SQL)
 }
 FORCE_MIGRATION_READ_FROM_ALIAS = {
-   
+    "insightsai": True,
+    "insightsai1": True
 }
 ENVIRONMENTS = ["dev", "qa", "prod", "aws"] # Added AWS
 
