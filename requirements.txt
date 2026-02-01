@@ -2,3 +2,4 @@ streamlit
 azure-storage-blob
 requests
 boto3
+pandas>=2.0.0
