@@ -75,11 +75,23 @@ def determine_write_app_name(ui_app_name: str) -> str:
 # ==========================================
 
 def get_s3_client():
+    """Create S3 client with error handling for missing credentials."""
+    aws_key = st.session_state.get('AWS_ACCESS_KEY_ID')
+    aws_secret = st.session_state.get('AWS_SECRET_ACCESS_KEY')
+    aws_region = st.session_state.get('AWS_REGION')
+    
+    # Check if AWS credentials are configured
+    if not aws_key or not aws_secret or not aws_region:
+        raise ValueError(
+            "AWS credentials not configured. Please add AWS_ACCESS_KEY_ID, "
+            "AWS_SECRET_ACCESS_KEY, and AWS_DEFAULT_REGION to your secrets.toml file."
+        )
+    
     return boto3.client(
         's3',
-        aws_access_key_id=st.session_state.get('AWS_ACCESS_KEY_ID'),
-        aws_secret_access_key=st.session_state.get('AWS_SECRET_ACCESS_KEY'),
-        region_name=st.session_state.get('AWS_REGION')
+        aws_access_key_id=aws_key,
+        aws_secret_access_key=aws_secret,
+        region_name=aws_region
     )
 
 def download_latest_from_s3(app_name: str):
@@ -347,6 +359,96 @@ def compare_prompts(env1_data, env2_data, env1_name, env2_name):
     
     return comparison_results
 
+def push_prompts_between_envs(app_name, source_env, target_env):
+    """
+    Push all prompts from source environment to target environment.
+    Works exactly like the Raw JSON upload in Prompt Editor.
+    
+    Args:
+        app_name: The application name
+        source_env: Source environment (e.g., 'dev')
+        target_env: Target environment (e.g., 'qa')
+    
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        read_app_name = determine_read_app_name(app_name)
+        write_app_name = determine_write_app_name(app_name)
+        
+        st.info(f"🔍 Reading from app: `{read_app_name}`, Writing as: `{write_app_name}`")
+        
+        # Download the complete JSON from source environment
+        st.info(f"📥 Step 1: Downloading data from {source_env.upper()}...")
+        source_data = download_data_dispatcher(read_app_name, source_env)
+        
+        if not source_data:
+            st.error(f"❌ No data returned from {source_env.upper()}")
+            return False
+            
+        if "APPS" not in source_data:
+            st.error(f"❌ No 'APPS' key found in {source_env.upper()} data")
+            st.json(source_data)
+            return False
+        
+        if not isinstance(source_data.get("APPS"), list):
+            st.error("❌ Invalid JSON structure in source. 'APPS' must be a list.")
+            return False
+        
+        st.success(f"✅ Downloaded data from {source_env.upper()}")
+        
+        # Find the app data in source
+        app_found = False
+        for app in source_data.get("APPS", []):
+            if app.get("name", "").lower() == read_app_name.lower():
+                app_found = True
+                num_prompts = len(app.get("prompts", []))
+                st.info(f"✅ Found app '{read_app_name}' with {num_prompts} prompts")
+                break
+        
+        if not app_found:
+            st.error(f"❌ App '{app_name}' not found in {source_env.upper()}")
+            st.info(f"Available apps: {[app.get('name') for app in source_data.get('APPS', [])]}")
+            return False
+        
+        # Create a deep copy of the entire source data structure
+        st.info(f"📋 Step 2: Creating deep copy of source data...")
+        target_data = copy.deepcopy(source_data)
+        
+        # Update the app name to write_app_name (same logic as Raw JSON upload)
+        st.info(f"✏️ Step 3: Updating app names to '{write_app_name}'...")
+        for app in target_data.get("APPS", []):
+            if app.get("name", "").lower() == read_app_name.lower():
+                app["name"] = write_app_name
+        
+        # Get the number of prompts for success message
+        app_data = next(
+            (app for app in target_data["APPS"] if app.get("name", "").lower() == write_app_name.lower()), 
+            None
+        )
+        num_prompts = len(app_data.get("prompts", [])) if app_data else 0
+        
+        st.info(f"📤 Step 4: Uploading {num_prompts} prompts to {target_env.upper()}...")
+        
+        # Upload to target environment (exactly like Raw JSON upload)
+        success = upload_data_dispatcher(write_app_name, target_data, target_env)
+        
+        if success:
+            st.info(f"🧹 Step 5: Clearing cache for {target_env.upper()}...")
+            # Clear cache for target environment
+            trigger_cache_clear(write_app_name, target_env)
+            st.success(f"✅ Successfully pushed {num_prompts} prompts from {source_env.upper()} to {target_env.upper()}!")
+            return True
+        else:
+            st.error(f"❌ Upload failed for {target_env.upper()}")
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Error during push operation: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+        return False
+
 # ==========================================
 # --- PASSWORD PROTECTION ---
 # ==========================================
@@ -384,13 +486,13 @@ def check_password():
 def load_configuration():
     """Load Azure and AWS configuration from secrets."""
     try:
-        # Azure Configuration
+        # Azure Configuration (Required)
         st.session_state['AZURE_STORAGE_CONNECTION_STRING'] = st.secrets["AZURE_STORAGE_CONNECTION_STRING"]
         st.session_state['container_dev'] = "app-metadata"
         st.session_state['container_qa'] = "app-metadata-qa"
         st.session_state['container_prod'] = "app-metadata-prod"
         
-        # AWS Configuration
+        # AWS Configuration (Optional)
         st.session_state['AWS_ACCESS_KEY_ID'] = st.secrets.get("AWS_ACCESS_KEY_ID", "")
         st.session_state['AWS_SECRET_ACCESS_KEY'] = st.secrets.get("AWS_SECRET_ACCESS_KEY", "")
         st.session_state['AWS_REGION'] = st.secrets.get("AWS_DEFAULT_REGION", "")
@@ -412,6 +514,32 @@ def page_prompt_editor():
         selected_env = st.selectbox("Environment:", ENVIRONMENTS, index=0, key="editor_env")
     with col2:
         selected_app_name = st.selectbox("App:", SUPPORTED_APPS, key="editor_app")
+    
+    # Check if AWS is selected but not configured
+    if selected_env == "aws":
+        aws_configured = (
+            st.session_state.get('AWS_ACCESS_KEY_ID') and 
+            st.session_state.get('AWS_SECRET_ACCESS_KEY') and 
+            st.session_state.get('AWS_REGION') and
+            st.session_state.get('S3_BUCKET_NAME')
+        )
+        
+        if not aws_configured:
+            st.error("❌ AWS Environment Not Configured")
+            st.warning("""
+            AWS credentials are missing. To use the AWS environment, add the following to your `.streamlit/secrets.toml` file:
+            
+            ```toml
+            AWS_ACCESS_KEY_ID = "your-aws-access-key-id"
+            AWS_SECRET_ACCESS_KEY = "your-aws-secret-access-key"
+            AWS_DEFAULT_REGION = "us-east-1"
+            S3_BUCKET_NAME = "your-s3-bucket-name"
+            ```
+            
+            **Note:** If you don't use AWS, select DEV, QA, or PROD environment instead.
+            """)
+            st.info("💡 **Tip:** AWS environment is optional. You can use DEV, QA, or PROD with Azure Storage.")
+            st.stop()
     
     read_app_name = determine_read_app_name(selected_app_name)
     write_app_name = determine_write_app_name(selected_app_name)
@@ -574,7 +702,77 @@ def page_environment_comparison():
     with col3:
         env2 = st.selectbox("Environment 2:", ENVIRONMENTS, index=1, key="compare_env2")
     
-    if st.button("🔄 Run Comparison", type="primary"):
+    # Check if AWS is selected but not configured
+    aws_configured = (
+        st.session_state.get('AWS_ACCESS_KEY_ID') and 
+        st.session_state.get('AWS_SECRET_ACCESS_KEY') and 
+        st.session_state.get('AWS_REGION') and
+        st.session_state.get('S3_BUCKET_NAME')
+    )
+    
+    if (env1 == "aws" or env2 == "aws") and not aws_configured:
+        st.error("❌ AWS Environment Not Configured")
+        st.warning("""
+        AWS credentials are missing. To compare with AWS environment, add the following to your `.streamlit/secrets.toml` file:
+        
+        ```toml
+        AWS_ACCESS_KEY_ID = "your-aws-access-key-id"
+        AWS_SECRET_ACCESS_KEY = "your-aws-secret-access-key"
+        AWS_DEFAULT_REGION = "us-east-1"
+        S3_BUCKET_NAME = "your-s3-bucket-name"
+        ```
+        
+        **Alternatively:** Select only DEV, QA, or PROD environments for comparison.
+        """)
+        st.stop()
+    
+    # Add two buttons side by side: Run Comparison and Push Prompts
+    button_col1, button_col2 = st.columns(2)
+    
+    with button_col1:
+        run_comparison_clicked = st.button("🔄 Run Comparison", type="primary", use_container_width=True)
+    
+    with button_col2:
+        # Dynamic push button text
+        push_button_text = f"🚀 Push {env1.upper()} → {env2.upper()}"
+        push_prompts_clicked = st.button(push_button_text, type="secondary", use_container_width=True)
+    
+    # Initialize session state for push confirmation
+    if 'show_push_confirm' not in st.session_state:
+        st.session_state.show_push_confirm = False
+    
+    # Handle Push Prompts button click
+    if push_prompts_clicked:
+        if env1 == env2:
+            st.warning("⚠️ Cannot push to the same environment. Please select two different environments.")
+        else:
+            st.session_state.show_push_confirm = True
+    
+    # Show confirmation dialog if needed
+    if st.session_state.get('show_push_confirm', False):
+        st.warning(f"⚠️ **Confirmation Required**")
+        st.write(f"You are about to push **ALL prompts** from **{env1.upper()}** to **{env2.upper()}** for app **{selected_app}**.")
+        st.write("This will **overwrite** the existing prompts in the target environment.")
+        
+        confirm_col1, confirm_col2, confirm_col3 = st.columns([1, 1, 2])
+        
+        with confirm_col1:
+            if st.button(f"✅ Confirm Push", key="confirm_push", type="primary"):
+                st.session_state.show_push_confirm = False
+                with st.spinner(f"Pushing prompts from {env1.upper()} to {env2.upper()}..."):
+                    success = push_prompts_between_envs(selected_app, env1, env2)
+                    if success:
+                        st.balloons()
+                        st.cache_data.clear()
+                        st.rerun()
+        
+        with confirm_col2:
+            if st.button("❌ Cancel", key="cancel_push"):
+                st.session_state.show_push_confirm = False
+                st.rerun()
+    
+    # Handle Run Comparison button click
+    if run_comparison_clicked:
         if env1 == env2:
             st.warning("Please select two different environments to compare.")
         else:
@@ -630,17 +828,26 @@ def page_environment_comparison():
                     for r in comparison_results
                 ])
                 
-                # Color-code the status
+                # Color-code the status with Excel-like styling
                 def highlight_status(row):
                     if row['Status'] == 'Modified':
-                        return ['background-color: #fff3cd'] * len(row)
+                        # Yellow background with black text (like Excel)
+                        return ['background-color: #FFF9C4; color: #000000'] * len(row)
                     elif 'Only in' in row['Status']:
-                        return ['background-color: #f8d7da'] * len(row)
+                        # Light red background with black text
+                        return ['background-color: #FFCDD2; color: #000000'] * len(row)
                     else:
-                        return ['background-color: #d4edda'] * len(row)
+                        # Light green background with black text
+                        return ['background-color: #C8E6C9; color: #000000'] * len(row)
                 
-                styled_df = summary_df.style.apply(highlight_status, axis=1)
-                st.dataframe(styled_df, use_container_width=True)
+                # Apply Excel-like styling
+                styled_df = summary_df.style.apply(highlight_status, axis=1).set_properties(**{
+                    'color': 'black',
+                    'background-color': 'white',
+                    'border': '1px solid #ddd'
+                })
+                
+                st.dataframe(styled_df, use_container_width=True, height=400)
                 
                 # Export option
                 csv = summary_df.to_csv(index=False)
@@ -685,370 +892,36 @@ def page_excel_converter():
     st.title("📊 Excel to JSON Converter")
     st.write("Upload Excel files and convert them to structured JSON format.")
     
-    # Embed the HTML converter
-    html_content = """
-    <!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Excel to JSON Converter</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
-    <style>
-        body { font-family: system-ui, -apple-system, sans-serif; }
-        .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 1000; }
-        .toast { padding: 0.75rem 1rem; border-radius: 0.375rem; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 0.5rem; min-width: 250px; }
-        .toast-success { background-color: #10b981; color: white; }
-        .toast-error { background-color: #ef4444; color: white; }
-        .toast-warning { background-color: #f59e0b; color: white; }
-    </style>
-</head>
-<body class="bg-gray-50">
-    <div id="toast-container" class="toast-container"></div>
-    
-    <div class="max-w-6xl mx-auto p-8">
-        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-            <h2 class="text-2xl font-bold mb-4">Upload Excel File</h2>
-            <div id="file-upload-area" class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition">
-                <input type="file" id="file-input" accept=".xlsx,.xls" class="hidden">
-                <p id="upload-text" class="text-gray-600">Click to upload or drag & drop Excel file</p>
-            </div>
-            <div id="file-name-display" class="mt-4 hidden">
-                <p class="text-sm text-gray-600">
-                    <span id="processed-file-name"></span>
-                </p>
-            </div>
-        </div>
+    # Load HTML file from the same directory
+    try:
+        # Try to read the HTML file from the same folder
+        with open('excel_converter.html', 'r', encoding='utf-8') as f:
+            html_content = f.read()
         
-        <div id="error-display" class="hidden bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-            <h3 class="text-lg font-semibold text-red-800 mb-2">Errors & Warnings</h3>
-            <div id="errors-list"></div>
-        </div>
+        # Embed the HTML using iframe-like component
+        components.html(html_content, height=1200, scrolling=True)
         
-        <div id="data-preview" class="hidden">
-            <div class="bg-white rounded-lg shadow-md p-6 mb-6">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-2xl font-bold">Data Preview</h2>
-                    <button id="download-json-btn" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition">
-                        Download JSON
-                    </button>
-                </div>
-                
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                    <div class="bg-blue-50 p-4 rounded-lg">
-                        <h3 class="text-sm font-semibold text-blue-800 mb-1">Categories</h3>
-                        <p id="categories-count" class="text-2xl font-bold text-blue-900">0</p>
-                    </div>
-                    <div class="bg-green-50 p-4 rounded-lg">
-                        <h3 class="text-sm font-semibold text-green-800 mb-1">Sample Queries</h3>
-                        <p id="sample-queries-count" class="text-2xl font-bold text-green-900">0</p>
-                    </div>
-                    <div class="bg-purple-50 p-4 rounded-lg">
-                        <h3 class="text-sm font-semibold text-purple-800 mb-1">Suggested Questions</h3>
-                        <p id="suggested-questions-count" class="text-2xl font-bold text-purple-900">0</p>
-                    </div>
-                </div>
-                
-                <div id="categories-accordion" class="space-y-4"></div>
-                
-                <div class="mt-6">
-                    <h3 class="text-lg font-semibold mb-3">Sample Queries</h3>
-                    <div id="sample-queries-list" class="space-y-2"></div>
-                </div>
-                
-                <div class="mt-6">
-                    <h3 class="text-lg font-semibold mb-3">Suggested Questions</h3>
-                    <div id="suggested-questions-list" class="space-y-2"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        class ExcelParser {
-            parseFile(file) {
-                return new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        try {
-                            const data = new Uint8Array(e.target.result);
-                            const workbook = XLSX.read(data, {type: 'array'});
-                            const result = this.parseWorkbook(workbook);
-                            resolve(result);
-                        } catch (error) {
-                            reject(error);
-                        }
-                    };
-                    reader.onerror = reject;
-                    reader.readAsArrayBuffer(file);
-                });
-            }
-            
-            parseWorkbook(workbook) {
-                const errors = [];
-                const categories = [];
-                const sampleQueries = [];
-                const suggestedQuestions = [];
-                
-                workbook.SheetNames.forEach(sheetName => {
-                    const sheet = workbook.Sheets[sheetName];
-                    const jsonData = XLSX.utils.sheet_to_json(sheet, {header: 1});
-                    
-                    if (sheetName.toLowerCase().includes('sample')) {
-                        this.parseSampleQueries(jsonData, sampleQueries, errors);
-                    } else if (sheetName.toLowerCase().includes('suggested')) {
-                        this.parseSuggestedQuestions(jsonData, suggestedQuestions, errors);
-                    } else {
-                        this.parseCategory(sheetName, jsonData, categories, errors);
-                    }
-                });
-                
-                return {
-                    data: {categories, sample_queries: sampleQueries, suggested_questions: suggestedQuestions},
-                    errors
-                };
-            }
-            
-            parseCategory(categoryName, rows, categories, errors) {
-                if (rows.length < 2) return;
-                
-                const tables = [];
-                let currentTable = null;
-                
-                rows.forEach((row, idx) => {
-                    if (!row || row.length === 0) return;
-                    
-                    const firstCell = String(row[0] || '').trim();
-                    if (!firstCell) return;
-                    
-                    if (firstCell.toLowerCase() === 'table name') {
-                        if (currentTable) tables.push(currentTable);
-                        currentTable = {name: '', description: '', columns: []};
-                    } else if (currentTable && !currentTable.name) {
-                        currentTable.name = firstCell;
-                        currentTable.description = String(row[1] || '').trim();
-                    } else if (firstCell.toLowerCase() === 'column name') {
-                        return;
-                    } else if (currentTable && currentTable.name) {
-                        currentTable.columns.push({
-                            name: firstCell,
-                            description: String(row[1] || '').trim(),
-                            dataType: String(row[2] || '').trim()
-                        });
-                    }
-                });
-                
-                if (currentTable) tables.push(currentTable);
-                
-                if (tables.length > 0) {
-                    categories.push({name: categoryName, Tables: tables});
-                }
-            }
-            
-            parseSampleQueries(rows, sampleQueries, errors) {
-                rows.slice(1).forEach(row => {
-                    if (row && row[0]) {
-                        sampleQueries.push({
-                            user_input: String(row[0]).trim(),
-                            description: String(row[1] || '').trim()
-                        });
-                    }
-                });
-            }
-            
-            parseSuggestedQuestions(rows, suggestedQuestions, errors) {
-                rows.slice(1).forEach(row => {
-                    if (row && row[0]) {
-                        const questions = [];
-                        for (let i = 1; i < row.length; i++) {
-                            if (row[i]) questions.push(String(row[i]).trim());
-                        }
-                        suggestedQuestions.push({
-                            user_input: String(row[0]).trim(),
-                            suggested_questions: questions
-                        });
-                    }
-                });
-            }
-            
-            generateJSON(parsedData, selectedColumns) {
-                const output = {
-                    categories: parsedData.categories.map(cat => ({
-                        name: cat.name,
-                        Tables: cat.Tables.map(table => ({
-                            name: table.name,
-                            description: table.description,
-                            columns: table.columns.filter(col => {
-                                const colId = `${cat.name}-${table.name}-${col.name}`;
-                                return selectedColumns.get(colId);
-                            }).map(col => ({
-                                name: col.name,
-                                description: col.description,
-                                dataType: col.dataType
-                            }))
-                        }))
-                    })),
-                    sample_queries: parsedData.sample_queries,
-                    suggested_questions: parsedData.suggested_questions
-                };
-                return output;
-            }
-        }
+    except FileNotFoundError:
+        st.error("❌ Excel converter HTML file not found!")
+        st.write("Please ensure `excel_converter.html` is in the same directory as this app.")
+        st.write("Expected location: `excel_converter.html`")
         
-        let parsedData = null;
-        let selectedColumns = new Map();
-        let isProcessing = false;
+        # Provide download link for the HTML file
+        st.markdown("---")
+        st.subheader("Setup Instructions:")
+        st.markdown("""
+        1. Download the `excel_converter.html` file from the repository
+        2. Place it in the same folder as `streamlit_app.py`
+        3. Refresh this page
         
-        const fileInput = document.getElementById('file-input');
-        const fileUploadArea = document.getElementById('file-upload-area');
-        const uploadText = document.getElementById('upload-text');
-        const fileNameDisplay = document.getElementById('file-name-display');
-        const processedFileName = document.getElementById('processed-file-name');
-        const errorDisplay = document.getElementById('error-display');
-        const errorsList = document.getElementById('errors-list');
-        const dataPreview = document.getElementById('data-preview');
-        const downloadBtn = document.getElementById('download-json-btn');
-        const categoriesCount = document.getElementById('categories-count');
-        const sampleQueriesCount = document.getElementById('sample-queries-count');
-        const suggestedQuestionsCount = document.getElementById('suggested-questions-count');
-        const categoriesAccordion = document.getElementById('categories-accordion');
-        const sampleQueriesList = document.getElementById('sample-queries-list');
-        const suggestedQuestionsList = document.getElementById('suggested-questions-list');
-        
-        function showToast(message, type = 'success') {
-            const container = document.getElementById('toast-container');
-            const toast = document.createElement('div');
-            toast.className = `toast toast-${type}`;
-            toast.textContent = message;
-            container.appendChild(toast);
-            setTimeout(() => toast.remove(), 3000);
-        }
-        
-        async function handleFileSelect(file) {
-            isProcessing = true;
-            uploadText.textContent = 'Processing...';
-            fileUploadArea.classList.add('opacity-50', 'pointer-events-none');
-            
-            try {
-                const parser = new ExcelParser();
-                const result = await parser.parseFile(file);
-                parsedData = result.data;
-                
-                if (parsedData && parsedData.categories) {
-                    parsedData.categories = parsedData.categories.map(category => ({
-                        ...category,
-                        Tables: category.Tables.map(table => ({
-                            ...table,
-                            columns: table.columns.map(column => {
-                                const columnId = `${category.name}-${table.name}-${column.name}`;
-                                selectedColumns.set(columnId, true);
-                                return {...column, id: columnId};
-                            })
-                        }))
-                    }));
-                }
-                
-                showToast('File parsed successfully!', 'success');
-                processedFileName.textContent = `Processed: ${file.name}`;
-                fileNameDisplay.classList.remove('hidden');
-                renderDataPreview();
-                
-            } catch (error) {
-                showToast('Failed to parse file', 'error');
-            } finally {
-                isProcessing = false;
-                uploadText.textContent = 'Upload Excel File';
-                fileUploadArea.classList.remove('opacity-50', 'pointer-events-none');
-            }
-        }
-        
-        function renderDataPreview() {
-            if (!parsedData) return;
-            
-            dataPreview.classList.remove('hidden');
-            categoriesCount.textContent = parsedData.categories.length;
-            sampleQueriesCount.textContent = parsedData.sample_queries.length;
-            suggestedQuestionsCount.textContent = parsedData.suggested_questions.length;
-            
-            categoriesAccordion.innerHTML = '';
-            parsedData.categories.forEach((category, catIdx) => {
-                const categoryDiv = document.createElement('div');
-                categoryDiv.className = 'border rounded-lg p-4 bg-gray-50';
-                categoryDiv.innerHTML = `
-                    <h3 class="text-lg font-semibold mb-3">${category.name}</h3>
-                    ${category.Tables.map(table => `
-                        <div class="mb-4 bg-white p-3 rounded">
-                            <h4 class="font-medium mb-2">${table.name}</h4>
-                            <p class="text-sm text-gray-600 mb-2">${table.description}</p>
-                            <div class="grid grid-cols-2 gap-2">
-                                ${table.columns.map(col => `
-                                    <label class="flex items-center space-x-2">
-                                        <input type="checkbox" class="rounded" data-column-id="${col.id}" ${selectedColumns.get(col.id) ? 'checked' : ''}>
-                                        <span class="text-sm">${col.name}</span>
-                                    </label>
-                                `).join('')}
-                            </div>
-                        </div>
-                    `).join('')}
-                `;
-                categoriesAccordion.appendChild(categoryDiv);
-            });
-            
-            sampleQueriesList.innerHTML = '';
-            parsedData.sample_queries.forEach(query => {
-                const div = document.createElement('div');
-                div.className = 'border rounded p-3 bg-gray-50';
-                div.innerHTML = `<p class="font-medium">${query.user_input}</p>`;
-                sampleQueriesList.appendChild(div);
-            });
-            
-            suggestedQuestionsList.innerHTML = '';
-            parsedData.suggested_questions.forEach(item => {
-                const div = document.createElement('div');
-                div.className = 'border rounded p-3 bg-gray-50';
-                div.innerHTML = `<p class="font-medium mb-2">${item.user_input}</p>`;
-                suggestedQuestionsList.appendChild(div);
-            });
-            
-            document.querySelectorAll('input[type="checkbox"][data-column-id]').forEach(checkbox => {
-                checkbox.addEventListener('change', (e) => {
-                    selectedColumns.set(e.target.dataset.columnId, e.target.checked);
-                });
-            });
-        }
-        
-        function handleDownload() {
-            if (!parsedData) return;
-            const parser = new ExcelParser();
-            const json = parser.generateJSON(parsedData, selectedColumns);
-            const blob = new Blob([JSON.stringify(json, null, 2)], {type: 'application/json'});
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'metadata_output.json';
-            a.click();
-            URL.revokeObjectURL(url);
-            showToast('JSON downloaded!', 'success');
-        }
-        
-        fileUploadArea.addEventListener('click', () => fileInput.click());
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files[0]) handleFileSelect(e.target.files[0]);
-        });
-        fileUploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            const file = Array.from(e.dataTransfer.files).find(f => f.name.match(/\.xlsx?$/i));
-            if (file) handleFileSelect(file);
-        });
-        fileUploadArea.addEventListener('dragover', (e) => e.preventDefault());
-        downloadBtn.addEventListener('click', handleDownload);
-    </script>
-</body>
-</html>
-    """
-    
-    components.html(html_content, height=1200, scrolling=True)
+        **File structure should be:**
+        ```
+        your-repo/
+        ├── streamlit_app.py
+        ├── excel_converter.html    ← Add this file
+        └── requirements.txt
+        ```
+        """)
 
 # ==========================================
 # --- MAIN APPLICATION ---
