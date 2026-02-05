@@ -27,16 +27,58 @@ ENVIRONMENTS = ["dev", "qa", "prod", "aws"]
 # --- HELPER FUNCTIONS ---
 # ==========================================
 
-def trigger_cache_clear(app_name, env):
-    """Calls backend to clear cache."""
+def get_api_base_url(env):
+    """Returns the backend API URL for the selected environment."""
     api_map = {
         "dev": "https://ciathciaidevbeca01.thankfulisland-b0727d92.eastus2.azurecontainerapps.io", 
         "qa": "https://ciathciaitstbeca01.thankfulisland-b0727d92.eastus2.azurecontainerapps.io",
         "prod": "https://ciathciaiprdbeca01.thankfulisland-b0727d92.eastus2.azurecontainerapps.io",
         "aws": "https://ciathena.info:8000"
     }
+    return api_map.get(env, api_map["dev"])
+
+def validate_metadata_json(data, target_app_name):
+    """
+    Validates that the JSON follows the strict structure required by metadata.py.
+    Rule 1: Root must be a dictionary.
+    Rule 2: Must contain a root key matching the Uppercase App Name (e.g., "MMM").
+    Rule 3: The content of that key must be a list of tables.
+    """
+    if not isinstance(data, dict):
+        return False, "❌ Invalid Root: The file must be a JSON object."
+
+    # Logic from metadata.py: json_key = app_name.strip().upper()
+    required_key = target_app_name.strip().upper()
     
-    base_url = api_map.get(env, api_map["dev"])
+    if required_key not in data:
+        # Check if they used lowercase by mistake to give a helpful error
+        found_keys = [k for k in data.keys() if k.lower() == target_app_name.lower()]
+        if found_keys:
+            return False, f"❌ Casing Error: Found key '{found_keys[0]}', but system requires ALL CAPS: '{required_key}'."
+        return False, f"❌ Missing Root Key: JSON must contain the key '{required_key}' at the root."
+
+    # Check if the content is a list (standard metadata structure)
+    if not isinstance(data[required_key], list):
+         return False, f"❌ Invalid Structure: The value for '{required_key}' must be a list of tables."
+
+    return True, "✅ Valid"
+
+def check_chroma_status(app_name, env):
+    """Fetches the current background task status from the backend."""
+    base_url = get_api_base_url(env)
+    url = f"{base_url}/admin/chroma/status/{app_name}"
+    
+    try:
+        resp = requests.get(url, timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
+        return {"status": "unknown", "message": "Could not reach server."}
+    except Exception:
+        return {"status": "error", "message": "Connection failed."}
+
+def trigger_cache_clear(app_name, env):
+    """Calls backend to clear cache."""
+    base_url = get_api_base_url(env)
     url = f"{base_url}/admin/cache/clear"
     
     try:
@@ -53,6 +95,28 @@ def trigger_cache_clear(app_name, env):
                 st.error(f"Cache Clear Failed: {resp.text}")
     except Exception as e:
         st.error(f"API Error: {str(e)}")
+
+def trigger_chroma_populate(app_name, env):
+    """Calls backend to populate ChromaDB."""
+    base_url = get_api_base_url(env)
+    url = f"{base_url}/admin/chroma/populate"
+    
+    try:
+        with st.spinner(f"🚀 Triggering Chroma Population for {app_name} on {env.upper()}..."):
+            resp = requests.post(
+                url, 
+                json={"app_name": app_name},
+                headers={"x-admin-token": "my-super-secret-admin-key-123"},
+                timeout=5
+            )
+            
+            if resp.status_code == 200:
+                st.success(f"✅ Job Started: {resp.json().get('message')}")
+                st.info("The process is running in the background. It may take a few minutes to complete.")
+            else:
+                st.error(f"Failed to trigger: {resp.text}")
+    except Exception as e:
+        st.error(f"API Connection Error: {str(e)}")
 
 def get_blob_prefix(app_name: str) -> str:
     """Gets the correct file prefix based on the application name."""
@@ -80,7 +144,6 @@ def get_s3_client():
     aws_secret = st.session_state.get('AWS_SECRET_ACCESS_KEY')
     aws_region = st.session_state.get('AWS_REGION')
     
-    # Check if AWS credentials are configured
     if not aws_key or not aws_secret or not aws_region:
         raise ValueError(
             "AWS credentials not configured. Please add AWS_ACCESS_KEY_ID, "
@@ -177,6 +240,37 @@ def load_s3_preview(key: str):
         st.error(f"Failed to load preview {key}: {str(e)}")
         return None
 
+def download_metadata_from_s3(app_name: str):
+    """Downloads metadata JSON from S3."""
+    s3 = get_s3_client()
+    bucket = st.session_state.get('S3_BUCKET_NAME')
+    filename = f"{app_name.lower()}.json"
+    
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=f"metadata/{filename}")
+        return json.loads(obj['Body'].read().decode('utf-8'))
+    except Exception as e:
+        return None
+
+def upload_metadata_to_s3(app_name: str, data: dict):
+    """Uploads metadata JSON to S3."""
+    s3 = get_s3_client()
+    bucket = st.session_state.get('S3_BUCKET_NAME')
+    filename = f"{app_name.lower()}.json"
+    
+    try:
+        json_data = json.dumps(data, indent=4)
+        s3.put_object(
+            Bucket=bucket,
+            Key=f"metadata/{filename}",
+            Body=json_data,
+            ContentType='application/json'
+        )
+        return True
+    except Exception as e:
+        st.error(f"Upload failed: {e}")
+        return False
+
 # ==========================================
 # --- AZURE BLOB FUNCTIONS ---
 # ==========================================
@@ -244,6 +338,36 @@ def load_azure_preview(blob_name: str, container_name: str, conn_str: str):
         st.error(f"Failed to load blob {blob_name}: {str(e)}")
         return None
 
+def download_metadata_from_azure(app_name: str, container_name: str, conn_str: str):
+    """Downloads metadata JSON from Azure."""
+    filename = f"{app_name.lower()}.json"
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+        container_client = blob_service_client.get_container_client(container_name)
+        blob_client = container_client.get_blob_client(filename)
+        
+        if not blob_client.exists():
+            return None
+        
+        return json.loads(blob_client.download_blob().readall())
+    except Exception as e:
+        return None
+
+def upload_metadata_to_azure(app_name: str, data: dict, container_name: str, conn_str: str):
+    """Uploads metadata JSON to Azure."""
+    filename = f"{app_name.lower()}.json"
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+        container_client = blob_service_client.get_container_client(container_name)
+        blob_client = container_client.get_blob_client(filename)
+        
+        json_data = json.dumps(data, indent=4)
+        blob_client.upload_blob(json_data, overwrite=True)
+        return True
+    except Exception as e:
+        st.error(f"Upload failed: {e}")
+        return False
+
 # ==========================================
 # --- DISPATCHER FUNCTIONS ---
 # ==========================================
@@ -279,6 +403,24 @@ def preview_dispatcher(filename, env):
         container = st.session_state.get(f'container_{env}')
         conn_str = st.session_state.get('AZURE_STORAGE_CONNECTION_STRING')
         return load_azure_preview(filename, container, conn_str)
+
+def download_metadata_dispatcher(app_name, env):
+    """Downloads metadata JSON from the appropriate storage."""
+    if env == "aws":
+        return download_metadata_from_s3(app_name)
+    else:
+        container = st.session_state.get(f'container_{env}')
+        conn_str = st.session_state.get('AZURE_STORAGE_CONNECTION_STRING')
+        return download_metadata_from_azure(app_name, container, conn_str)
+
+def upload_metadata_dispatcher(app_name, data, env):
+    """Uploads metadata JSON to the appropriate storage."""
+    if env == "aws":
+        return upload_metadata_to_s3(app_name, data)
+    else:
+        container = st.session_state.get(f'container_{env}')
+        conn_str = st.session_state.get('AZURE_STORAGE_CONNECTION_STRING')
+        return upload_metadata_to_azure(app_name, data, container, conn_str)
 
 # ==========================================
 # --- COMPARISON FUNCTIONS ---
@@ -363,14 +505,6 @@ def push_prompts_between_envs(app_name, source_env, target_env):
     """
     Push all prompts from source environment to target environment.
     Works exactly like the Raw JSON upload in Prompt Editor.
-    
-    Args:
-        app_name: The application name
-        source_env: Source environment (e.g., 'dev')
-        target_env: Target environment (e.g., 'qa')
-    
-    Returns:
-        bool: True if successful, False otherwise
     """
     try:
         read_app_name = determine_read_app_name(app_name)
@@ -378,7 +512,6 @@ def push_prompts_between_envs(app_name, source_env, target_env):
         
         st.info(f"🔍 Reading from app: `{read_app_name}`, Writing as: `{write_app_name}`")
         
-        # Download the complete JSON from source environment
         st.info(f"📥 Step 1: Downloading data from {source_env.upper()}...")
         source_data = download_data_dispatcher(read_app_name, source_env)
         
@@ -397,7 +530,6 @@ def push_prompts_between_envs(app_name, source_env, target_env):
         
         st.success(f"✅ Downloaded data from {source_env.upper()}")
         
-        # Find the app data in source
         app_found = False
         for app in source_data.get("APPS", []):
             if app.get("name", "").lower() == read_app_name.lower():
@@ -411,17 +543,14 @@ def push_prompts_between_envs(app_name, source_env, target_env):
             st.info(f"Available apps: {[app.get('name') for app in source_data.get('APPS', [])]}")
             return False
         
-        # Create a deep copy of the entire source data structure
         st.info(f"📋 Step 2: Creating deep copy of source data...")
         target_data = copy.deepcopy(source_data)
         
-        # Update the app name to write_app_name (same logic as Raw JSON upload)
         st.info(f"✏️ Step 3: Updating app names to '{write_app_name}'...")
         for app in target_data.get("APPS", []):
             if app.get("name", "").lower() == read_app_name.lower():
                 app["name"] = write_app_name
         
-        # Get the number of prompts for success message
         app_data = next(
             (app for app in target_data["APPS"] if app.get("name", "").lower() == write_app_name.lower()), 
             None
@@ -430,12 +559,10 @@ def push_prompts_between_envs(app_name, source_env, target_env):
         
         st.info(f"📤 Step 4: Uploading {num_prompts} prompts to {target_env.upper()}...")
         
-        # Upload to target environment (exactly like Raw JSON upload)
         success = upload_data_dispatcher(write_app_name, target_data, target_env)
         
         if success:
             st.info(f"🧹 Step 5: Clearing cache for {target_env.upper()}...")
-            # Clear cache for target environment
             trigger_cache_clear(write_app_name, target_env)
             st.success(f"✅ Successfully pushed {num_prompts} prompts from {source_env.upper()} to {target_env.upper()}!")
             return True
@@ -733,7 +860,6 @@ def page_environment_comparison():
         run_comparison_clicked = st.button("🔄 Run Comparison", type="primary", use_container_width=True)
     
     with button_col2:
-        # Dynamic push button text
         push_button_text = f"🚀 Push {env1.upper()} → {env2.upper()}"
         push_prompts_clicked = st.button(push_button_text, type="secondary", use_container_width=True)
     
@@ -779,11 +905,9 @@ def page_environment_comparison():
             with st.spinner(f"Loading data from {env1.upper()} and {env2.upper()}..."):
                 read_app_name = determine_read_app_name(selected_app)
                 
-                # Load data from both environments
                 data1 = download_data_dispatcher(read_app_name, env1)
                 data2 = download_data_dispatcher(read_app_name, env2)
                 
-                # Extract app-specific data
                 app_data1 = None
                 app_data2 = None
                 
@@ -793,10 +917,8 @@ def page_environment_comparison():
                 if data2 and "APPS" in data2:
                     app_data2 = next((app for app in data2["APPS"] if app.get("name", "").lower() == read_app_name.lower()), None)
                 
-                # Run comparison
                 comparison_results = compare_prompts(app_data1, app_data2, env1.upper(), env2.upper())
                 
-                # Display summary
                 st.subheader(f"📊 Comparison Summary: {selected_app}")
                 st.caption(f"Comparing **{env1.upper()}** vs **{env2.upper()}**")
                 
@@ -815,10 +937,8 @@ def page_environment_comparison():
                 
                 st.divider()
                 
-                # Display detailed results
                 st.subheader("📋 Detailed Comparison")
                 
-                # Create summary table
                 summary_df = pd.DataFrame([
                     {
                         "Prompt Name": r["prompt_name"],
@@ -828,19 +948,14 @@ def page_environment_comparison():
                     for r in comparison_results
                 ])
                 
-                # Color-code the status with Excel-like styling
                 def highlight_status(row):
                     if row['Status'] == 'Modified':
-                        # Yellow background with black text (like Excel)
                         return ['background-color: #FFF9C4; color: #000000'] * len(row)
                     elif 'Only in' in row['Status']:
-                        # Light red background with black text
                         return ['background-color: #FFCDD2; color: #000000'] * len(row)
                     else:
-                        # Light green background with black text
                         return ['background-color: #C8E6C9; color: #000000'] * len(row)
                 
-                # Apply Excel-like styling
                 styled_df = summary_df.style.apply(highlight_status, axis=1).set_properties(**{
                     'color': 'black',
                     'background-color': 'white',
@@ -849,7 +964,6 @@ def page_environment_comparison():
                 
                 st.dataframe(styled_df, use_container_width=True, height=400)
                 
-                # Export option
                 csv = summary_df.to_csv(index=False)
                 st.download_button(
                     label="📥 Download Comparison Report (CSV)",
@@ -860,7 +974,6 @@ def page_environment_comparison():
                 
                 st.divider()
                 
-                # Detailed diff view for modified prompts
                 st.subheader("🔎 Detailed Differences")
                 
                 modified_prompts = [r for r in comparison_results if r["status"] == "Modified"]
@@ -892,13 +1005,10 @@ def page_excel_converter():
     st.title("📊 Excel to JSON Converter")
     st.write("Upload Excel files and convert them to structured JSON format.")
     
-    # Load HTML file from the same directory
     try:
-        # Try to read the HTML file from the same folder
         with open('excel_converter.html', 'r', encoding='utf-8') as f:
             html_content = f.read()
         
-        # Embed the HTML using iframe-like component
         components.html(html_content, height=1200, scrolling=True)
         
     except FileNotFoundError:
@@ -906,7 +1016,6 @@ def page_excel_converter():
         st.write("Please ensure `excel_converter.html` is in the same directory as this app.")
         st.write("Expected location: `excel_converter.html`")
         
-        # Provide download link for the HTML file
         st.markdown("---")
         st.subheader("Setup Instructions:")
         st.markdown("""
@@ -920,6 +1029,201 @@ def page_excel_converter():
         ├── streamlit_app.py
         ├── excel_converter.html    ← Add this file
         └── requirements.txt
+        ```
+        """)
+
+# ==========================================
+# --- PAGE: METADATA & CHROMADB MANAGER ---
+# ==========================================
+
+def page_metadata_manager():
+    st.title("🗄️ Metadata & ChromaDB Manager")
+    st.write("Manage metadata files and trigger ChromaDB indexing for your applications.")
+    
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        selected_env = st.selectbox("Environment:", ENVIRONMENTS, index=0, key="metadata_env")
+    with col2:
+        selected_app_name = st.selectbox("App:", SUPPORTED_APPS, key="metadata_app")
+    
+    # Check if AWS is selected but not configured
+    if selected_env == "aws":
+        aws_configured = (
+            st.session_state.get('AWS_ACCESS_KEY_ID') and 
+            st.session_state.get('AWS_SECRET_ACCESS_KEY') and 
+            st.session_state.get('AWS_REGION') and
+            st.session_state.get('S3_BUCKET_NAME')
+        )
+        
+        if not aws_configured:
+            st.error("❌ AWS Environment Not Configured")
+            st.warning("""
+            AWS credentials are missing. To use the AWS environment, add the following to your `.streamlit/secrets.toml` file:
+            
+            ```toml
+            AWS_ACCESS_KEY_ID = "your-aws-access-key-id"
+            AWS_SECRET_ACCESS_KEY = "your-aws-secret-access-key"
+            AWS_DEFAULT_REGION = "us-east-1"
+            S3_BUCKET_NAME = "your-s3-bucket-name"
+            ```
+            
+            **Note:** If you don't use AWS, select DEV, QA, or PROD environment instead.
+            """)
+            st.info("💡 **Tip:** AWS environment is optional. You can use DEV, QA, or PROD with Azure Storage.")
+            st.stop()
+    
+    read_app_name = determine_read_app_name(selected_app_name)
+    write_app_name = determine_write_app_name(selected_app_name)
+    
+    st.caption(f"📥 Loading from: `{read_app_name}` | 📤 Saving as: `{write_app_name}`")
+    
+    # Get container name for display
+    if selected_env == "aws":
+        storage_location = st.session_state.get('S3_BUCKET_NAME', 'S3 Bucket')
+    else:
+        storage_location = st.session_state.get(f'container_{selected_env}', 'Azure Container')
+    
+    st.divider()
+    
+    # Load Metadata
+    with st.spinner("Loading metadata..."):
+        metadata_json = download_metadata_dispatcher(read_app_name, selected_env)
+    
+    col_edit, col_actions = st.columns([3, 1])
+    
+    with col_edit:
+        st.subheader("📝 Metadata JSON Editor")
+        st.markdown(f"**File:** `{read_app_name.lower()}.json` in `{storage_location}`")
+        
+        if metadata_json is None:
+            st.warning("⚠️ Metadata file not found. Creating new template.")
+            json_str = json.dumps({selected_app_name.upper(): []}, indent=4)
+        else:
+            json_str = json.dumps(metadata_json, indent=4)
+        
+        edited_meta = st.text_area(
+            "Edit Metadata JSON:",
+            value=json_str,
+            height=600,
+            key=f"metadata_editor_{selected_app_name}"
+        )
+        
+        if st.button("💾 Save Metadata", type="primary", use_container_width=True):
+            try:
+                data_to_save = json.loads(edited_meta)
+                is_valid, message = validate_metadata_json(data_to_save, read_app_name)
+                
+                if not is_valid:
+                    st.error(message)
+                else:
+                    if upload_metadata_dispatcher(write_app_name, data_to_save, selected_env):
+                        st.success(f"✅ Metadata uploaded successfully! ({message})")
+                        trigger_cache_clear(write_app_name, selected_env)
+                        st.rerun()
+                    else:
+                        st.error("❌ Upload failed due to connection error.")
+            except json.JSONDecodeError as e:
+                st.error(f"❌ Invalid JSON Format: {str(e)}")
+    
+    with col_actions:
+        st.subheader("🤖 ChromaDB Actions")
+        
+        st.info("""
+        **Workflow:**
+        1. Edit & Save metadata JSON on the left
+        2. Click "Start ChromaDB Job" below
+        3. Backend will re-index ChromaDB with updated metadata
+        """)
+        
+        st.divider()
+        
+        # ChromaDB Population Button
+        if st.button("🚀 Start ChromaDB Job", type="primary", use_container_width=True):
+            trigger_chroma_populate(write_app_name, selected_env)
+        
+        st.divider()
+        
+        # Status Display
+        st.markdown("**Job Status**")
+        
+        if st.button("🔄 Refresh Status", use_container_width=True):
+            status_data = check_chroma_status(write_app_name, selected_env)
+            
+            state = status_data.get("status", "idle")
+            msg = status_data.get("message", "")
+            time_log = status_data.get("timestamp", "")
+            
+            if state == "running":
+                st.warning(f"🟡 **Running**\n\n{msg}")
+            elif state == "completed":
+                st.success(f"🟢 **Completed**\n\n{msg}")
+                if time_log:
+                    st.caption(f"Finished: {time_log}")
+            elif state == "failed":
+                st.error(f"🔴 **Failed**\n\nError: {msg}")
+            else:
+                st.info(f"⚪ **Idle**\n\n{msg}")
+        
+        st.divider()
+        
+        # Cache Clear Button
+        if st.button("🧹 Clear Cache", use_container_width=True):
+            trigger_cache_clear(write_app_name, selected_env)
+    
+    # Metadata Structure Help
+    with st.expander("ℹ️ Metadata JSON Structure Help"):
+        st.markdown("""
+        ### Required Structure
+        
+        The metadata JSON must follow this structure:
+        
+        ```json
+        {
+          "APP_NAME": [
+            {
+              "table_name": "example_table",
+              "description": "Table description",
+              "columns": [
+                {
+                  "name": "column1",
+                  "type": "VARCHAR",
+                  "description": "Column description"
+                }
+              ]
+            }
+          ]
+        }
+        ```
+        
+        ### Important Rules:
+        
+        1. **Root Key:** Must be the app name in UPPERCASE (e.g., "MMX", "FAST")
+        2. **Root Value:** Must be a list of table objects
+        3. **Casing:** The app name key must be in ALL CAPS
+        
+        ### Example for MMX app:
+        
+        ```json
+        {
+          "MMX": [
+            {
+              "table_name": "users",
+              "description": "User information table",
+              "columns": [
+                {
+                  "name": "user_id",
+                  "type": "INTEGER",
+                  "description": "Unique user identifier"
+                },
+                {
+                  "name": "username",
+                  "type": "VARCHAR",
+                  "description": "User login name"
+                }
+              ]
+            }
+          ]
+        }
         ```
         """)
 
@@ -947,7 +1251,12 @@ def main():
     
     page = st.sidebar.radio(
         "Navigate to:",
-        ["📝 Prompt Editor", "🔍 Environment Comparison", "📊 Excel to JSON Converter"]
+        [
+            "📝 Prompt Editor",
+            "🔍 Environment Comparison",
+            "📊 Excel to JSON Converter",
+            "🗄️ Metadata & ChromaDB Manager"
+        ]
     )
     
     st.sidebar.markdown("---")
@@ -960,6 +1269,8 @@ def main():
         page_environment_comparison()
     elif page == "📊 Excel to JSON Converter":
         page_excel_converter()
+    elif page == "🗄️ Metadata & ChromaDB Manager":
+        page_metadata_manager()
 
 if __name__ == "__main__":
     main()
