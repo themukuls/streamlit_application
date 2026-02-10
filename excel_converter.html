@@ -1,0 +1,910 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel to JSON Metadata Converter</title>
+    <meta name="description" content="Convert Excel metadata files to structured JSON format locally in your browser without any setup." />
+    <meta name="author" content="Metadata Tools" />
+
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        // Tailwind CSS configuration to match the original project's theme
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            DEFAULT: 'hsl(210 80% 48%)',
+                            foreground: 'hsl(0 0% 100%)',
+                        },
+                        secondary: {
+                            DEFAULT: 'hsl(210 15% 92%)',
+                            foreground: 'hsl(215 25% 20%)',
+                        },
+                        destructive: {
+                            DEFAULT: 'hsl(0 72% 51%)',
+                            foreground: 'hsl(0 0% 100%)',
+                        },
+                        muted: {
+                            DEFAULT: 'hsl(210 15% 95%)',
+                            foreground: 'hsl(215 12% 45%)',
+                        },
+                        accent: {
+                            DEFAULT: 'hsl(195 85% 45%)',
+                            foreground: 'hsl(0 0% 100%)',
+                        },
+                        success: {
+                            DEFAULT: 'hsl(142 76% 36%)',
+                            foreground: 'hsl(0 0% 100%)',
+                        },
+                        warning: {
+                            DEFAULT: 'hsl(38 92% 50%)',
+                            foreground: 'hsl(0 0% 100%)',
+                        },
+                        background: 'hsl(210 20% 98%)',
+                        foreground: 'hsl(215 25% 15%)',
+                        border: 'hsl(210 20% 88%)',
+                        input: 'hsl(210 20% 92%)',
+                        ring: 'hsl(210 80% 48%)',
+                        card: 'hsl(0 0% 100%)',
+                        'card-foreground': 'hsl(215 25% 15%)',
+                        popover: 'hsl(0 0% 100%)',
+                        'popover-foreground': 'hsl(215 25% 15%)',
+                    },
+                    borderRadius: {
+                        lg: '0.5rem',
+                        md: 'calc(0.5rem - 2px)',
+                        sm: 'calc(0.5rem - 4px)',
+                    },
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Base styles and custom component styles */
+        body {
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+            @apply bg-background text-foreground;
+        }
+        .container {
+            max-width: 1280px; /* Equivalent to max-w-7xl */
+            margin-left: auto;
+            margin-right: auto;
+            padding-left: 1rem; /* px-4 */
+            padding-right: 1rem; /* px-4 */
+        }
+        /* Toast Notification Styles */
+        .toast-container {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .toast {
+            padding: 0.75rem 1rem;
+            border-radius: 0.375rem; /* rounded-md */
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 250px;
+            max-width: 350px;
+        }
+        .toast-success {
+            background-color: hsl(var(--success));
+            color: hsl(var(--success-foreground));
+        }
+        .toast-error {
+            background-color: hsl(var(--destructive));
+            color: hsl(var(--destructive-foreground));
+        }
+        .toast-warning {
+            background-color: hsl(var(--warning));
+            color: hsl(var(--warning-foreground));
+        }
+        .toast-icon {
+            width: 1rem;
+            height: 1rem;
+        }
+        /* Custom Accordion Styles (simplified from shadcn/ui) */
+        .accordion-item {
+            border-bottom: 1px solid hsl(var(--border));
+        }
+        .accordion-trigger {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            width: 100%;
+            padding: 0.75rem 0;
+            font-weight: 600;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .accordion-trigger:hover {
+            color: hsl(var(--primary));
+        }
+        .accordion-content {
+            padding-left: 1.5rem;
+            padding-top: 0.5rem;
+            padding-bottom: 1rem;
+            border-left: 2px solid hsl(var(--primary) / 0.3);
+        }
+        /* Scroll Area Styles (simplified from shadcn/ui) */
+        .scroll-area {
+            height: 300px; /* Fixed height for scrollable content */
+            overflow-y: auto;
+            border: 1px solid hsl(var(--border));
+            border-radius: 0.375rem;
+            padding: 0.5rem;
+        }
+        /* Tooltip for column descriptions */
+        .tooltip-container {
+            position: relative;
+            display: inline-block;
+        }
+        .tooltip-content {
+            position: absolute;
+            z-index: 50;
+            display: none;
+            width: 12rem; /* w-48 */
+            padding: 0.5rem; /* p-2 */
+            font-size: 0.75rem; /* text-xs */
+            color: hsl(var(--popover-foreground));
+            background-color: hsl(var(--popover));
+            border: 1px solid hsl(var(--border));
+            border-radius: 0.375rem; /* rounded-md */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+            transform: translateX(-50%);
+            left: 50%;
+            top: 100%;
+            margin-top: 0.5rem; /* mt-2 */
+        }
+        .tooltip-container:hover .tooltip-content {
+            display: block;
+        }
+    </style>
+    <!-- XLSX Library CDN -->
+    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div id="app" class="min-h-screen bg-background">
+        <div class="container mx-auto px-4 py-8 max-w-7xl">
+            <div class="mb-8">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="p-2 rounded-lg bg-primary/10">
+                        <!-- FileJson icon (Lucide React equivalent SVG) -->
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-file-json w-6 h-6 text-primary"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M10 13l-2 2 2 2"/><path d="M14 17l2-2-2-2"/></svg>
+                    </div>
+                    <h1 class="text-3xl font-bold text-foreground">
+                        Excel to JSON Metadata Converter
+                    </h1>
+                </div>
+                <p class="text-muted-foreground">
+                    Upload your Excel metadata file and generate a fully structured JSON output
+                </p>
+            </div>
+
+            <div class="grid gap-6">
+                <!-- File Upload Card -->
+                <div class="bg-card text-card-foreground rounded-xl border shadow">
+                    <div class="flex flex-col space-y-1.5 p-6">
+                        <h3 class="font-semibold whitespace-nowrap leading-none tracking-tight">Upload Excel File</h3>
+                        <p class="text-sm text-muted-foreground">
+                            Select or drag and drop your Excel metadata file (.xlsx)
+                        </p>
+                    </div>
+                    <div class="p-6 pt-0">
+                        <div id="file-upload-area"
+                            class="border-2 border-dashed rounded-lg p-12 text-center transition-all cursor-pointer hover:border-primary hover:bg-muted/50"
+                        >
+                            <input
+                                type="file"
+                                accept=".xlsx,.xls"
+                                class="hidden"
+                                id="file-upload-input"
+                            />
+                            <label for="file-upload-input" class="cursor-pointer flex flex-col items-center gap-4">
+                                <div class="p-4 rounded-full bg-primary/10">
+                                    <!-- Upload icon (Lucide React equivalent SVG) -->
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-upload w-8 h-8 text-primary"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/></svg>
+                                </div>
+                                <div>
+                                    <p class="text-lg font-semibold text-foreground mb-1" id="upload-text">
+                                        Upload Excel File
+                                    </p>
+                                    <p class="text-sm text-muted-foreground">
+                                        Drag and drop or click to select (.xlsx file)
+                                    </p>
+                                </div>
+                            </label>
+                        </div>
+                        <div id="file-name-display" class="mt-4 flex items-center gap-2 text-sm text-muted-foreground hidden">
+                            <!-- CheckCircle icon (Lucide React equivalent SVG) -->
+                            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check-circle w-4 h-4 text-success"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>
+                            <span id="processed-file-name"></span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Error Display Area -->
+                <div id="error-display-area" class="space-y-3"></div>
+
+                <!-- Data Preview Area -->
+                <div id="data-preview-area" class="space-y-4 hidden">
+                    <!-- Categories & Tables Card -->
+                    <div class="bg-card text-card-foreground rounded-xl border shadow">
+                        <div class="flex flex-col space-y-1.5 p-6">
+                            <h3 class="font-semibold whitespace-nowrap leading-none tracking-tight flex items-center gap-2">
+                                <!-- Layers icon (Lucide React equivalent SVG) -->
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layers w-5 h-5 text-primary"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.84l8.17 3.88a2 2 0 0 0 1.66 0l8.17-3.88a1 1 0 0 0 0-1.84Z"/><path d="m12.83 12.18a2 2 0 0 0-1.66 0L2.6 16.08a1 1 0 0 0 0 1.84l8.17 3.88a2 2 0 0 0 1.66 0l8.17-3.88a1 1 0 0 0 0-1.84Z"/></svg>
+                                Categories & Tables
+                                <span id="category-count" class="ml-auto inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80"></span>
+                            </h3>
+                        </div>
+                        <div class="p-6 pt-0">
+                            <div class="scroll-area" id="categories-scroll-area">
+                                <div id="categories-accordion" class="w-full">
+                                    <!-- Categories will be rendered here by JavaScript -->
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 gap-4">
+                        <!-- Sample Queries Card -->
+                        <div class="bg-card text-card-foreground rounded-xl border shadow">
+                            <div class="flex flex-col space-y-1.5 p-6">
+                                <h3 class="font-semibold whitespace-nowrap leading-none tracking-tight flex items-center gap-2">
+                                    <!-- MessageSquare icon (Lucide React equivalent SVG) -->
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-message-square w-5 h-5 text-accent"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                                    Sample Queries
+                                    <span id="sample-queries-count" class="ml-auto inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80"></span>
+                                </h3>
+                            </div>
+                            <div class="p-6 pt-0">
+                                <div class="scroll-area h-[200px]">
+                                    <div id="sample-queries-list" class="space-y-3">
+                                        <!-- Sample queries will be rendered here by JavaScript -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Suggested Questions Card -->
+                        <div class="bg-card text-card-foreground rounded-xl border shadow">
+                            <div class="flex flex-col space-y-1.5 p-6">
+                                <h3 class="font-semibold whitespace-nowrap leading-none tracking-tight flex items-center gap-2">
+                                    <!-- HelpCircle icon (Lucide React equivalent SVG) -->
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-help-circle w-5 h-5 text-accent"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+                                    Suggested Questions
+                                    <span id="suggested-questions-count" class="ml-auto inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80"></span>
+                                </h3>
+                            </div>
+                            <div class="p-6 pt-0">
+                                <div class="scroll-area h-[200px]">
+                                    <div id="suggested-questions-list" class="space-y-3">
+                                        <!-- Suggested questions will be rendered here by JavaScript -->
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Download JSON Card -->
+                    <div class="bg-card text-card-foreground rounded-xl border shadow border-primary/20 bg-primary/5">
+                        <div class="flex flex-col space-y-1.5 p-6">
+                            <h3 class="font-semibold whitespace-nowrap leading-none tracking-tight flex items-center gap-2">
+                                <!-- Download icon (Lucide React equivalent SVG) -->
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-download w-5 h-5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                Download JSON Output
+                            </h3>
+                            <p class="text-sm text-muted-foreground">
+                                Generate and download the structured JSON file
+                            </p>
+                        </div>
+                        <div class="p-6 pt-0">
+                            <button id="download-json-button" class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-11 px-8 w-full md:w-auto">
+                                <!-- Download icon (Lucide React equivalent SVG) -->
+                                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-download w-4 h-4 mr-2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
+                                Download metadata_output.json
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification Container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script>
+        // Utility function for merging Tailwind classes (simplified cn)
+        function cn(...inputs) {
+            return inputs.filter(Boolean).join(' ');
+        }
+
+        // Simple Toast Notification System
+        function showToast(message, type = 'success') {
+            const toastContainer = document.getElementById('toast-container');
+            const toastElement = document.createElement('div');
+            toastElement.className = `toast toast-${type}`;
+            
+            let iconSvg = '';
+            if (type === 'success') {
+                iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-check-circle toast-icon"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>';
+            } else if (type === 'error') {
+                iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-alert-circle toast-icon"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>';
+            } else if (type === 'warning') {
+                iconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-alert-triangle toast-icon"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+            }
+
+            toastElement.innerHTML = `${iconSvg}<span>${message}</span>`;
+            toastContainer.appendChild(toastElement);
+
+            setTimeout(() => {
+                toastElement.remove();
+            }, 3000); // Toast disappears after 3 seconds
+        }
+
+        // ExcelParser Class (adapted from src/utils/excelParser.ts)
+        class ExcelParser {
+            constructor() {
+                this.workbook = null;
+                this.generalInfo = [];
+                this.errors = [];
+            }
+
+            async parseFile(file) {
+                this.errors = [];
+                
+                try {
+                    const arrayBuffer = await file.arrayBuffer();
+                    this.workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                    
+                    if (!this.workbook.SheetNames.includes('GeneralInfo')) {
+                        throw new Error('GeneralInfo sheet is required but not found');
+                    }
+                    
+                    this.generalInfo = this.parseGeneralInfo();
+                    this.validateSheetReferences();
+                    
+                    const categories = this.parseCategories();
+                    const sample_queries = this.parseSampleQueries();
+                    const suggested_questions = this.parseSuggestedQuestions();
+                    
+                    return {
+                        data: { categories, sample_queries, suggested_questions },
+                        errors: this.errors
+                    };
+                } catch (error) {
+                    this.errors.push({
+                        type: 'error',
+                        message: error instanceof Error ? error.message : 'Unknown error occurred'
+                    });
+                    return {
+                        data: { categories: [], sample_queries: [], suggested_questions: [] },
+                        errors: this.errors
+                    };
+                }
+            }
+
+            parseGeneralInfo() {
+                if (!this.workbook) return [];
+                const sheet = this.workbook.Sheets['GeneralInfo'];
+                const data = XLSX.utils.sheet_to_json(sheet);
+                return data.filter(row => row.Component);
+            }
+
+            validateSheetReferences() {
+                if (!this.workbook) return;
+                const sheetNames = this.workbook.SheetNames;
+                this.generalInfo.forEach(row => {
+                    if (row.Sheet && !sheetNames.includes(row.Sheet)) {
+                        this.errors.push({
+                            type: 'warning',
+                            message: `Sheet "${row.Sheet}" referenced in GeneralInfo but not found in workbook`
+                        });
+                    }
+                });
+            }
+
+            parseCategories() {
+                if (!this.workbook) return [];
+                const columnsDataRows = this.generalInfo.filter(row => row.Component === 'ColumnsData');
+                const categoriesMap = new Map();
+                
+                columnsDataRows.forEach(row => {
+                    const categoryName = row.Category || 'Unknown';
+                    const tableName = row.Table || 'Unknown';
+                    const tableDescription = row["Table Description"] || '';
+                    const sheetName = row.Sheet;
+                    
+                    if (!sheetName || !this.workbook?.Sheets[sheetName]) {
+                        return;
+                    }
+                    
+                    const columns = this.parseColumnsFromSheet(sheetName);
+                    
+                    const table = {
+                        name: tableName,
+                        description: tableDescription,
+                        columns
+                    };
+                    
+                    if (!categoriesMap.has(categoryName)) {
+                        categoriesMap.set(categoryName, []);
+                    }
+                    categoriesMap.get(categoryName).push(table);
+                });
+                
+                const categories = [];
+                categoriesMap.forEach((tables, categoryName) => {
+                    categories.push({
+                        name: categoryName,
+                        Tables: tables
+                    });
+                });
+                
+                return categories;
+            }
+
+            parseColumnsFromSheet(sheetName) {
+                if (!this.workbook) return [];
+                const sheet = this.workbook.Sheets[sheetName];
+                
+                // Get all headers from the first row of the sheet
+                const sheetAsArrays = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
+                if (!sheetAsArrays || sheetAsArrays.length === 0) {
+                    this.errors.push({ type: 'warning', message: `Sheet "${sheetName}" is empty or has no header.` });
+                    return [];
+                }
+
+                const canonicalHeaders = sheetAsArrays[0].map(h => String(h || '').trim()).filter(h => h);
+                const dataRows = sheetAsArrays.slice(1); // All rows after the header
+
+                const columns = [];
+                dataRows.forEach(rowArray => {
+                    const column = {};
+                    let hasPrimaryName = false;
+
+                    canonicalHeaders.forEach((headerKey, index) => {
+                        const value = rowArray[index]; // Get value by index, corresponding to headerKey
+                        
+                        if (!headerKey) return; // Skip if header key itself is empty/invalid
+
+                        let parsedValue;
+                        if (headerKey === 'supports_aggregation') {
+                            parsedValue = this.parseBoolean(value);
+                        } else if (['sample_values', 'aliases_synonyms', 'suggested_questions'].includes(headerKey)) {
+                            parsedValue = this.parseArray(value);
+                        } else {
+                            parsedValue = String(value || '').trim();
+                        }
+                        column[headerKey] = parsedValue;
+
+                        if (headerKey === 'name' || headerKey === 'name1') {
+                            if (parsedValue) {
+                                hasPrimaryName = true;
+                            }
+                        }
+                    });
+
+                    // Only add the column to the list if it has a meaningful name
+                    if (hasPrimaryName) {
+                        columns.push(column);
+                    }
+                });
+                
+                return columns;
+            }
+
+            parseSampleQueries() {
+                if (!this.workbook) return [];
+                const userInputRow = this.generalInfo.find(row => row.Component === 'UserInput');
+                if (!userInputRow || !userInputRow.Sheet) return [];
+                
+                const sheetName = userInputRow.Sheet;
+                if (!this.workbook.Sheets[sheetName]) {
+                    this.errors.push({
+                        type: 'warning',
+                        message: `UserInput sheet "${sheetName}" not found`
+                    });
+                    return [];
+                }
+                
+                const sheet = this.workbook.Sheets[sheetName];
+                const data = XLSX.utils.sheet_to_json(sheet);
+                
+                return data.filter(row => row.user_input).map(row => ({
+                    user_input: row.user_input || '',
+                    query: row.query || '',
+                    description: row.description || '',
+                    suggested_visualization: row.suggested_visualization || ''
+                }));
+            }
+
+            parseSuggestedQuestions() {
+                if (!this.workbook) return [];
+                const suggestedRow = this.generalInfo.find(row => row.Component === 'SuggestedQuestions');
+                if (!suggestedRow || !suggestedRow.Sheet) return [];
+                
+                const sheetName = suggestedRow.Sheet;
+                if (!this.workbook.Sheets[sheetName]) {
+                    this.errors.push({
+                        type: 'warning',
+                        message: `SuggestedQuestions sheet "${sheetName}" not found`
+                    });
+                    return [];
+                }
+                
+                const sheet = this.workbook.Sheets[sheetName];
+                const data = XLSX.utils.sheet_to_json(sheet);
+                
+                return data.filter(row => row.user_input).map(row => {
+                    let questions = [];
+                    
+                    if (row.suggested_questions) {
+                        if (typeof row.suggested_questions === 'string') {
+                            questions = row.suggested_questions.split('\n').map(q => q.trim()).filter(q => q.length > 0);
+                        } else if (Array.isArray(row.suggested_questions)) {
+                            questions = row.suggested_questions.map(q => String(q).trim()).filter(q => q.length > 0);
+                        } else {
+                            questions = String(row.suggested_questions).split('\n').map(q => q.trim()).filter(q => q.length > 0);
+                        }
+                    } else {
+                        Object.keys(row).forEach(key => {
+                            if (key !== 'user_input' && row[key]) {
+                                questions.push(String(row[key]).trim());
+                            }
+                        });
+                    }
+                    
+                    return {
+                        user_input: row.user_input || '',
+                        suggested_questions: questions
+                    };
+                });
+            }
+
+            parseBoolean(value) {
+                if (typeof value === 'boolean') return value;
+                if (typeof value === 'string') {
+                    const lower = value.toLowerCase().trim();
+                    return lower === 'true' || lower === 'yes' || lower === '1';
+                }
+                return false;
+            }
+
+            parseArray(value) {
+                if (Array.isArray(value)) return value;
+                if (!value) return [];
+                if (typeof value === 'string') {
+                    return value.split(',').map(v => v.trim()).filter(v => v);
+                }
+                return [String(value)];
+            }
+
+            generateJSON(data, selectedColumns) {
+                const filteredCategories = data.categories.map(category => ({
+                    ...category,
+                    Tables: category.Tables.map(table => ({
+                        ...table,
+                        columns: table.columns.filter(column => 
+                            !selectedColumns || (column.id && selectedColumns.get(column.id))
+                        ).map(column => {
+                            const { id, ...rest } = column; // Omit the 'id' property
+                            return rest;
+                        })
+                    }))
+                }));
+
+                const mmxItem = {
+                    Category: filteredCategories,
+                    sample_queries: data.sample_queries,
+                };
+
+                // Conditionally add suggested_questions
+                if (data.suggested_questions && data.suggested_questions.length > 0) {
+                    mmxItem.suggested_questions = data.suggested_questions;
+                }
+
+                return {
+                    FAST: [mmxItem]
+                };
+            }
+        }
+
+        // Global state variables
+        let isProcessing = false;
+        let parsedData = null;
+        let errors = [];
+        let fileName = '';
+        let selectedColumns = new Map(); // Map<string, boolean> to track selected columns
+
+        // DOM Elements
+        const fileUploadArea = document.getElementById('file-upload-area');
+        const fileUploadInput = document.getElementById('file-upload-input');
+        const uploadText = document.getElementById('upload-text');
+        const fileNameDisplay = document.getElementById('file-name-display');
+        const processedFileNameSpan = document.getElementById('processed-file-name');
+        const errorDisplayArea = document.getElementById('error-display-area');
+        const dataPreviewArea = document.getElementById('data-preview-area');
+        const categoriesAccordion = document.getElementById('categories-accordion');
+        const categoryCountSpan = document.getElementById('category-count');
+        const sampleQueriesList = document.getElementById('sample-queries-list');
+        const sampleQueriesCountSpan = document.getElementById('sample-queries-count');
+        const suggestedQuestionsList = document.getElementById('suggested-questions-list');
+        const suggestedQuestionsCountSpan = document.getElementById('suggested-questions-count');
+        const downloadJsonButton = document.getElementById('download-json-button');
+
+        // Render functions to update the DOM
+        function renderErrorDisplay() {
+            errorDisplayArea.innerHTML = '';
+            if (errors.length === 0) return;
+
+            const errorMessages = errors.filter(e => e.type === 'error');
+            const warningMessages = errors.filter(e => e.type === 'warning');
+
+            errorMessages.forEach((error, idx) => {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = 'relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px] [&:has(svg)]:pl-10 text-destructive border-destructive/50 bg-destructive/10';
+                alertDiv.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-alert-circle h-4 w-4 absolute left-4 top-4"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+                    <h5 class="mb-1 font-medium leading-none tracking-tight">Error</h5>
+                    <div class="text-sm [&_p]:leading-relaxed">${error.message}</div>
+                `;
+                errorDisplayArea.appendChild(alertDiv);
+            });
+
+            warningMessages.forEach((warning, idx) => {
+                const alertDiv = document.createElement('div');
+                alertDiv.className = 'relative w-full rounded-lg border p-4 [&>svg~*]:pl-7 [&>svg+div]:translate-y-[-3px] [&:has(svg)]:pl-10 border-warning bg-warning/10';
+                alertDiv.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-alert-triangle h-4 w-4 text-warning absolute left-4 top-4"><path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                    <h5 class="mb-1 font-medium leading-none tracking-tight text-warning-foreground">Warning</h5>
+                    <div class="text-sm [&_p]:leading-relaxed text-warning-foreground/80">${warning.message}</div>
+                `;
+                errorDisplayArea.appendChild(alertDiv);
+            });
+        }
+
+        function renderDataPreview() {
+            if (!parsedData || errors.some(e => e.type === 'error')) {
+                dataPreviewArea.classList.add('hidden');
+                return;
+            }
+            dataPreviewArea.classList.remove('hidden');
+
+            // Categories & Tables
+            categoriesAccordion.innerHTML = '';
+            categoryCountSpan.textContent = `${parsedData.categories.length} ${parsedData.categories.length === 1 ? 'Category' : 'Categories'}`;
+
+            parsedData.categories.forEach((category, catIdx) => {
+                const categoryDiv = document.createElement('div');
+                categoryDiv.className = 'accordion-item';
+                categoryDiv.innerHTML = `
+                    <button class="accordion-trigger flex items-center gap-2 text-lg font-semibold hover:no-underline py-3">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-layers w-5 h-5 text-primary"><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.84l8.17 3.88a2 2 0 0 0 1.66 0l8.17-3.88a1 1 0 0 0 0-1.84Z"/><path d="m12.83 12.18a2 2 0 0 0-1.66 0L2.6 16.08a1 1 0 0 0 0 1.84l8.17 3.88a2 2 0 0 0 1.66 0l8.17-3.88a1 1 0 0 0 0-1.84Z"/></svg>
+                        ${category.name}
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-down h-4 w-4 shrink-0 transition-transform duration-200"><path d="m6 9 6 6 6-6"/></svg>
+                    </button>
+                    <div class="accordion-content hidden">
+                        <div class="space-y-4">
+                            <!-- Tables will be rendered here -->
+                        </div>
+                    </div>
+                `;
+                categoriesAccordion.appendChild(categoryDiv);
+
+                const triggerButton = categoryDiv.querySelector('.accordion-trigger');
+                const contentDiv = categoryDiv.querySelector('.accordion-content');
+                const tablesContainer = contentDiv.querySelector('div');
+
+                triggerButton.addEventListener('click', () => {
+                    contentDiv.classList.toggle('hidden');
+                    triggerButton.querySelector('svg:last-child').classList.toggle('rotate-180');
+                });
+
+                category.Tables.forEach((table, tableIdx) => {
+                    const tableDiv = document.createElement('div');
+                    tableDiv.className = 'relative pl-6';
+                    tableDiv.innerHTML = `
+                        <div class="absolute left-0 top-4 h-0.5 w-4 bg-primary/30 -translate-x-full"></div>
+                        <div class="bg-muted/30 rounded-xl border shadow">
+                            <div class="p-4">
+                                <div class="flex items-start justify-between gap-2 mb-2">
+                                    <div class="flex items-center gap-2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-table-2 w-4 h-4 text-primary"><path d="M9 3H5a2 2 0 0 0-2 2v4m6-6h4l2 2v4m-8-6v4m0 0h4m-4 0h-4a2 2 0 0 0-2 2v4m6-4v4m0 0h4a2 2 0 0 0 2-2v-4"/></svg>
+                                        <span class="font-medium text-foreground">${table.name}</span>
+                                    </div>
+                                    <span class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80">
+                                        ${table.columns.length} columns
+                                    </span>
+                                </div>
+                                ${table.description ? `<p class="text-sm text-muted-foreground mb-2">${table.description}</p>` : ''}
+                                <div class="space-y-2 mt-4">
+                                    <h4 class="text-sm font-semibold">Columns:</h4>
+                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                        ${table.columns.map(column => `
+                                            <label class="flex items-center space-x-2 text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 group">
+                                                <input type="checkbox" class="h-4 w-4 shrink-0 rounded-sm border border-primary ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground"
+                                                    data-column-id="${column.id}" ${selectedColumns.get(column.id) ? 'checked' : ''} />
+                                                <span>${column.name}</span>
+                                                ${column.description ? `
+                                                    <span class="tooltip-container relative flex h-3 w-3">
+                                                        <span class="flex h-3 w-3 items-center justify-center rounded-full bg-muted text-muted-foreground text-[8px] font-bold">i</span>
+                                                        <span class="tooltip-content">
+                                                            ${column.description}
+                                                        </span>
+                                                    </span>
+                                                ` : ''}
+                                            </label>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    tablesContainer.appendChild(tableDiv);
+                });
+            });
+
+            // Sample Queries
+            sampleQueriesList.innerHTML = '';
+            sampleQueriesCountSpan.textContent = parsedData.sample_queries.length;
+            parsedData.sample_queries.forEach((query, idx) => {
+                const queryDiv = document.createElement('div');
+                queryDiv.className = 'border rounded-lg p-3 bg-muted/30';
+                queryDiv.innerHTML = `
+                    <p class="text-sm font-medium text-foreground mb-1">${query.user_input}</p>
+                    ${query.description ? `<p class="text-xs text-muted-foreground">${query.description}</p>` : ''}
+                `;
+                sampleQueriesList.appendChild(queryDiv);
+            });
+
+            // Suggested Questions
+            suggestedQuestionsList.innerHTML = '';
+            suggestedQuestionsCountSpan.textContent = parsedData.suggested_questions.length;
+            parsedData.suggested_questions.forEach((item, idx) => {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = 'border rounded-lg p-3 bg-muted/30';
+                itemDiv.innerHTML = `
+                    <p class="text-sm font-medium text-foreground mb-2">${item.user_input}</p>
+                    <div class="flex flex-wrap gap-1">
+                        ${item.suggested_questions.slice(0, 3).map(q => `
+                            <span class="inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80">
+                                ${q.length > 30 ? q.substring(0, 30) + '...' : q}
+                            </span>
+                        `).join('')}
+                    </div>
+                `;
+                suggestedQuestionsList.appendChild(itemDiv);
+            });
+
+            // Add event listeners for column checkboxes
+            document.querySelectorAll('#categories-accordion input[type="checkbox"]').forEach(checkbox => {
+                checkbox.addEventListener('change', (event) => {
+                    const columnId = event.target.dataset.columnId;
+                    const isSelected = event.target.checked;
+                    selectedColumns.set(columnId, isSelected);
+                });
+            });
+        }
+
+        // Event Handlers
+        async function handleFileSelect(file) {
+            isProcessing = true;
+            fileName = file.name;
+            errors = [];
+            parsedData = null;
+            selectedColumns = new Map();
+
+            uploadText.textContent = 'Processing...';
+            fileUploadArea.classList.add('opacity-50', 'pointer-events-none');
+            fileNameDisplay.classList.add('hidden'); // Hide until processed
+
+            try {
+                const parser = new ExcelParser();
+                const result = await parser.parseFile(file);
+                parsedData = result.data;
+                errors = result.errors;
+
+                // Assign unique IDs to columns and initialize selectedColumns map
+                if (parsedData && parsedData.categories) {
+                    parsedData.categories = parsedData.categories.map(category => ({
+                        ...category,
+                        Tables: category.Tables.map(table => ({
+                            ...table,
+                            columns: table.columns.map(column => {
+                                const columnId = `${category.name}-${table.name}-${column.name}`;
+                                selectedColumns.set(columnId, true); // Default to selected
+                                return { ...column, id: columnId };
+                            }),
+                        })),
+                    }));
+                }
+
+                if (errors.some(e => e.type === 'error')) {
+                    showToast('Errors found during parsing. Please check the details below.', 'error');
+                } else if (errors.some(e => e.type === 'warning')) {
+                    showToast('Parsing completed with warnings.', 'warning');
+                } else {
+                    showToast('Excel file parsed successfully!', 'success');
+                }
+
+                processedFileNameSpan.textContent = `Processed: ${fileName}`;
+                fileNameDisplay.classList.remove('hidden');
+
+            } catch (error) {
+                showToast('Failed to parse Excel file', 'error');
+                errors.push({
+                    type: 'error',
+                    message: error instanceof Error ? error.message : 'Unknown error occurred'
+                });
+            } finally {
+                isProcessing = false;
+                uploadText.textContent = 'Upload Excel File';
+                fileUploadArea.classList.remove('opacity-50', 'pointer-events-none');
+                renderErrorDisplay();
+                renderDataPreview();
+            }
+        }
+
+        function handleDownloadJSON() {
+            if (!parsedData) return;
+
+            const parser = new ExcelParser();
+            const jsonOutput = parser.generateJSON(parsedData, selectedColumns);
+            
+            const blob = new Blob([JSON.stringify(jsonOutput, null, 2)], {
+                type: 'application/json'
+            });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = 'metadata_output.json';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+
+            showToast('JSON file downloaded successfully!', 'success');
+        }
+
+        // Initialize event listeners when the DOM is fully loaded
+        document.addEventListener('DOMContentLoaded', () => {
+            fileUploadInput.addEventListener('change', (event) => {
+                const file = event.target.files?.[0];
+                if (file) {
+                    handleFileSelect(file);
+                }
+            });
+
+            fileUploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const files = Array.from(e.dataTransfer.files);
+                const excelFile = files.find(
+                    (file) => file.name.endsWith('.xlsx') || file.name.endsWith('.xls')
+                );
+                if (excelFile) {
+                    handleFileSelect(excelFile);
+                }
+            });
+
+            fileUploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+
+            downloadJsonButton.addEventListener('click', handleDownloadJSON);
+        });
+    </script>
+</body>
+</html>
